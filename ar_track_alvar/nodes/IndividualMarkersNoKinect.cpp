@@ -42,8 +42,11 @@
 #include <cv_bridge/cv_bridge.h>
 #include <ar_track_alvar_msgs/AlvarMarker.h>
 #include <ar_track_alvar_msgs/AlvarMarkers.h>
+#include <ar_track_alvar_msgs/ArMarkerArrayStamped.h>
+#include <ar_track_alvar_msgs/ArMarker.h>
 #include <tf/transform_listener.h>
 #include <tf/transform_broadcaster.h>
+#include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
 #include <dynamic_reconfigure/server.h>
 #include <ar_track_alvar/ParamsConfig.h>
@@ -57,6 +60,8 @@ cv_bridge::CvImagePtr cv_ptr_;
 image_transport::Subscriber cam_sub_;
 ros::Publisher arMarkerPub_;
 ros::Publisher rvizMarkerPub_;
+ros::Publisher cornerMarkerPub_;
+ros::Publisher debug_img_pub_;
 ar_track_alvar_msgs::AlvarMarkers arPoseMarkers_;
 visualization_msgs::Marker rvizMarker_;
 tf::TransformListener *tf_listener;
@@ -105,8 +110,11 @@ void getCapCallback (const sensor_msgs::ImageConstPtr & image_msg)
 
             marker_detector.Detect(&ipl_image, cam, true, false, max_new_marker_error, max_track_error, CVSEQ, true);
             arPoseMarkers_.markers.clear ();
+            ar_track_alvar_msgs::ArMarkerArrayStamped ar_msg;
+            ar_msg.header = image_msg->header;
 			for (size_t i=0; i<marker_detector.markers->size(); i++)
 			{
+
 				//Get the pose relative to the camera
         		int id = (*(marker_detector.markers))[i].GetId();
 				Pose p = (*(marker_detector.markers))[i].pose;
@@ -141,6 +149,29 @@ void getCapCallback (const sensor_msgs::ImageConstPtr & image_msg)
 				markerFrame += id_string;
 				tf::StampedTransform camToMarker (t, image_msg->header.stamp, image_msg->header.frame_id, markerFrame.c_str());
     			tf_broadcaster->sendTransform(camToMarker);
+
+        ar_track_alvar_msgs::ArMarker marker_msg;
+        marker_msg.id = id;
+
+        std::vector< PointDouble > marker_corners = (*(marker_detector.markers))[i].marker_corners_img;
+
+        marker_msg.corners.push_back((marker_corners[0].x + marker_corners[2].x) / 2.0);
+        marker_msg.corners.push_back((marker_corners[0].y + marker_corners[2].y) / 2.0);
+
+        cv::circle(cv_ptr_->image,
+                   cv::Point(marker_msg.corners[0], marker_msg.corners[1]),
+                   10, CV_RGB(255, 0, 0), -1);
+
+        for(int i = 0; i < marker_corners.size(); ++i) {
+          marker_msg.corners.push_back(marker_corners[i].x);
+          marker_msg.corners.push_back(marker_corners[i].y);
+
+          cv::circle(cv_ptr_->image,
+                     cv::Point(marker_corners[i].x, marker_corners[i].y),
+                     10, CV_RGB(0, 255, 0), -1);
+        }
+
+        ar_msg.markers.push_back(marker_msg);
 
 				//Create the rviz visualization messages
 				tf::poseTFToMsg (markerPose, rvizMarker_.pose);
@@ -193,8 +224,13 @@ void getCapCallback (const sensor_msgs::ImageConstPtr & image_msg)
 				    rvizMarker_.color.a = 1.0;
 				    break;
 				}
+        sensor_msgs::ImagePtr output_image_msg = cv_ptr_->toImageMsg();
+        output_image_msg->header = image_msg->header;
+
 				rvizMarker_.lifetime = ros::Duration (1.0);
 				rvizMarkerPub_.publish (rvizMarker_);
+        cornerMarkerPub_.publish(ar_msg);
+        debug_img_pub_.publish(output_image_msg);
 
 				//Get the pose of the tag in the camera frame, then the output frame (usually torso)
 				tf::Transform tagPoseOutput = CamToOutput * markerPose;
@@ -300,6 +336,8 @@ int main(int argc, char *argv[])
 	tf_broadcaster = new tf::TransformBroadcaster();
 	arMarkerPub_ = n.advertise < ar_track_alvar_msgs::AlvarMarkers > ("ar_pose_marker", 0);
 	rvizMarkerPub_ = n.advertise < visualization_msgs::Marker > ("visualization_marker", 0);
+	cornerMarkerPub_ = n.advertise < ar_track_alvar_msgs::ArMarkerArrayStamped > ("ar", 0);
+  debug_img_pub_ = n.advertise < sensor_msgs::Image > ("output", 0);
 
   // Prepare dynamic reconfiguration
   dynamic_reconfigure::Server < ar_track_alvar::ParamsConfig > server;
